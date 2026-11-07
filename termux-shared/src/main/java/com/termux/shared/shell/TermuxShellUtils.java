@@ -158,7 +158,8 @@ public class TermuxShellUtils {
                                 } else {
                                     // End of shebang.
                                     String executable = builder.toString();
-                                    if (executable.startsWith("/usr") || executable.startsWith("/bin")) {
+                                    if (executable.startsWith("/usr") || executable.startsWith("/bin") ||
+                                        executable.startsWith("/data/data/com.termux")) {
                                         String[] parts = executable.split("/");
                                         String binary = parts[parts.length - 1];
                                         interpreter = TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH + "/" + binary;

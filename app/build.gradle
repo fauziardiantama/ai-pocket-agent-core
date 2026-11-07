@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.termux"
+        applicationId "ai.pa.core"
         minSdkVersion project.properties.minSdkVersion.toInteger()
         targetSdkVersion project.properties.targetSdkVersion.toInteger()
         versionCode 1002
@@ -36,14 +36,14 @@ android {
         if (appVersionName) versionName = appVersionName
         validateVersionName(versionName)
 
-        manifestPlaceholders.TERMUX_PACKAGE_NAME = "com.termux"
-        manifestPlaceholders.TERMUX_APP_NAME = "Termux"
-        manifestPlaceholders.TERMUX_API_APP_NAME = "Termux:API"
-        manifestPlaceholders.TERMUX_BOOT_APP_NAME = "Termux:Boot"
-        manifestPlaceholders.TERMUX_FLOAT_APP_NAME = "Termux:Float"
-        manifestPlaceholders.TERMUX_STYLING_APP_NAME = "Termux:Styling"
-        manifestPlaceholders.TERMUX_TASKER_APP_NAME = "Termux:Tasker"
-        manifestPlaceholders.TERMUX_WIDGET_APP_NAME = "Termux:Widget"
+        manifestPlaceholders.TERMUX_PACKAGE_NAME = "ai.pa.core"
+        manifestPlaceholders.TERMUX_APP_NAME = "AI Pocket Agent Core"
+        manifestPlaceholders.TERMUX_API_APP_NAME = "AI Pocket Agent Core:API"
+        manifestPlaceholders.TERMUX_BOOT_APP_NAME = "AI Pocket Agent Core:Boot"
+        manifestPlaceholders.TERMUX_FLOAT_APP_NAME = "AI Pocket Agent Core:Float"
+        manifestPlaceholders.TERMUX_STYLING_APP_NAME = "AI Pocket Agent Core:Styling"
+        manifestPlaceholders.TERMUX_TASKER_APP_NAME = "AI Pocket Agent Core:Tasker"
+        manifestPlaceholders.TERMUX_WIDGET_APP_NAME = "AI Pocket Agent Core:Widget"
 
         externalNativeBuild {
             ndkBuild {

@@ -4,12 +4,14 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.Context;
+import android.os.Build;
 import android.os.Environment;
 import android.system.Os;
 import android.util.Pair;
 import android.view.WindowManager;
 
 import com.termux.R;
+import com.termux.app.services.PocketAgentAccessibilityService;
 import com.termux.app.utils.CrashUtils;
 import com.termux.shared.file.FileUtils;
 import com.termux.shared.file.TermuxFileUtils;
@@ -58,7 +60,7 @@ import static com.termux.shared.termux.TermuxConstants.TERMUX_STAGING_PREFIX_DIR
  * <p/>
  * (5.2) For every other zip entry, extract it into $STAGING_PREFIX and set execute permissions if necessary.
  */
-final class TermuxInstaller {
+public final class TermuxInstaller {
 
     private static final String LOG_TAG = "TermuxInstaller";
 
@@ -102,6 +104,8 @@ final class TermuxInstaller {
             if(PREFIX_FILE_LIST == null || PREFIX_FILE_LIST.length == 0 || (PREFIX_FILE_LIST.length == 1 && TermuxConstants.TERMUX_TMP_PREFIX_DIR_PATH.equals(PREFIX_FILE_LIST[0].getAbsolutePath()))) {
                 Logger.logInfo(LOG_TAG, "The termux prefix directory \"" + TERMUX_PREFIX_DIR_PATH + "\" exists but is empty or only contains the tmp directory.");
             } else {
+                setupDaemonDirectories();
+                PocketAgentAccessibilityService.extractPaServiceClient(activity);
                 whenDone.run();
                 return;
             }
@@ -163,6 +167,9 @@ final class TermuxInstaller {
                                     if (parts.length != 2)
                                         throw new RuntimeException("Malformed symlink line: " + line);
                                     String oldPath = parts[0];
+                                    if (oldPath.contains("com.termux")) {
+                                        oldPath = oldPath.replace("com.termux", "ai.pa.core");
+                                    }
                                     String newPath = TERMUX_STAGING_PREFIX_DIR_PATH + "/" + parts[1];
                                     symlinks.add(Pair.create(oldPath, newPath));
 
@@ -199,6 +206,12 @@ final class TermuxInstaller {
                             }
                         }
                     }
+
+                    Logger.logInfo(LOG_TAG, "Patching com.termux to ai.pa.core in staging files.");
+                    replaceBytesInStaging(TERMUX_STAGING_PREFIX_DIR, "com.termux".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1), "ai.pa.core".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
+
+                    Logger.logInfo(LOG_TAG, "Setting up dpkg-deb wrapper and Debian diversions database.");
+                    installDpkgDebWrapper(activity);
 
                     if (symlinks.isEmpty())
                         throw new RuntimeException("No SYMLINKS.txt encountered");
@@ -239,6 +252,9 @@ final class TermuxInstaller {
                             return;
                         }
                     }
+
+                    setupDaemonDirectories();
+                    PocketAgentAccessibilityService.extractPaServiceClient(activity);
 
                     Logger.logInfo(LOG_TAG, "Bootstrap packages installed successfully.");
                     activity.runOnUiThread(whenDone);
@@ -361,5 +377,172 @@ final class TermuxInstaller {
     }
 
     public static native byte[] getZip();
+
+    private static void copyFile(File src, File dst) throws java.io.IOException {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(src);
+             FileOutputStream out = new FileOutputStream(dst)) {
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = in.read(buf)) != -1) {
+                out.write(buf, 0, r);
+            }
+        }
+    }
+
+    private static boolean extractWrapperFromApk(Context context, File targetFile) {
+        String apkPath = context.getPackageCodePath();
+        if (apkPath == null) return false;
+        try (java.util.zip.ZipFile zipFile = new java.util.zip.ZipFile(apkPath)) {
+            for (String abi : Build.SUPPORTED_ABIS) {
+                String entryName = "lib/" + abi + "/libdpkg-deb-wrapper.so";
+                ZipEntry entry = zipFile.getEntry(entryName);
+                if (entry == null) {
+                    entryName = "lib/" + abi + "/libdpkg-deb-wrapper";
+                    entry = zipFile.getEntry(entryName);
+                }
+                if (entry != null) {
+                    try (java.io.InputStream in = zipFile.getInputStream(entry);
+                         FileOutputStream out = new FileOutputStream(targetFile)) {
+                        byte[] buf = new byte[8192];
+                        int r;
+                        while ((r = in.read(buf)) != -1) {
+                            out.write(buf, 0, r);
+                        }
+                    }
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "Failed to extract wrapper from APK zip", e);
+        }
+        return false;
+    }
+
+    private static void installDpkgDebWrapper(Context context) throws Exception {
+        File binDir = new File(TERMUX_STAGING_PREFIX_DIR_PATH, "bin");
+        File origDpkgDeb = new File(binDir, "dpkg-deb");
+        File realDpkgDeb = new File(binDir, "dpkg-deb.real");
+
+        File tempWrapper = new File(binDir, "dpkg-deb.wrapper.tmp");
+        boolean copied = false;
+        String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
+        if (nativeLibDir != null) {
+            File wrapperSrc = new File(nativeLibDir, "libdpkg-deb-wrapper.so");
+            if (!wrapperSrc.exists()) {
+                wrapperSrc = new File(nativeLibDir, "libdpkg-deb-wrapper");
+            }
+            if (wrapperSrc.exists()) {
+                copyFile(wrapperSrc, tempWrapper);
+                copied = true;
+            }
+        }
+
+        if (!copied) {
+            copied = extractWrapperFromApk(context, tempWrapper);
+        }
+
+        if (copied && tempWrapper.exists() && tempWrapper.length() > 0) {
+            if (origDpkgDeb.exists() && !realDpkgDeb.exists()) {
+                if (!origDpkgDeb.renameTo(realDpkgDeb)) {
+                    Logger.logError(LOG_TAG, "Failed to rename dpkg-deb to dpkg-deb.real");
+                    tempWrapper.delete();
+                    return;
+                }
+                Os.chmod(realDpkgDeb.getAbsolutePath(), 0755);
+            }
+
+            if (!tempWrapper.renameTo(origDpkgDeb)) {
+                Logger.logError(LOG_TAG, "Failed to rename tempWrapper to dpkg-deb");
+                realDpkgDeb.renameTo(origDpkgDeb);
+                return;
+            }
+            Os.chmod(origDpkgDeb.getAbsolutePath(), 0755);
+            Logger.logInfo(LOG_TAG, "dpkg-deb wrapper installed successfully.");
+
+            File dpkgDir = new File(TERMUX_STAGING_PREFIX_DIR_PATH, "var/lib/dpkg");
+            if (!dpkgDir.exists()) {
+                dpkgDir.mkdirs();
+            }
+            File diversionsFile = new File(dpkgDir, "diversions");
+            String diversionContent = "/data/data/ai.pa.core/files/usr/bin/dpkg-deb\n" +
+                                      "/data/data/ai.pa.core/files/usr/bin/dpkg-deb.real\n:\n";
+            try (FileOutputStream out = new FileOutputStream(diversionsFile)) {
+                out.write(diversionContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            Os.chmod(diversionsFile.getAbsolutePath(), 0644);
+            Logger.logInfo(LOG_TAG, "dpkg diversions database registered at " + diversionsFile.getAbsolutePath());
+        } else {
+            Logger.logError(LOG_TAG, "Could not find or extract libdpkg-deb-wrapper! Keeping original dpkg-deb without diversion.");
+        }
+    }
+
+    private static void replaceInFile(File file, byte[] oldBytes, byte[] newBytes) {
+        if (!file.isFile() || file.length() == 0 || file.length() > 50 * 1024 * 1024) return;
+        try {
+            int len = (int) file.length();
+            byte[] data = new byte[len];
+            try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+                int read = 0;
+                while (read < len) {
+                    int r = in.read(data, read, len - read);
+                    if (r < 0) break;
+                    read += r;
+                }
+            }
+            boolean modified = false;
+            int oldLen = oldBytes.length;
+            for (int i = 0; i <= len - oldLen; i++) {
+                boolean match = true;
+                for (int j = 0; j < oldLen; j++) {
+                    if (data[i + j] != oldBytes[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    System.arraycopy(newBytes, 0, data, i, oldLen);
+                    modified = true;
+                    i += oldLen - 1;
+                }
+            }
+            if (modified) {
+                try (FileOutputStream out = new FileOutputStream(file)) {
+                    out.write(data);
+                }
+            }
+        } catch (Exception e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "Failed to patch file: " + file.getAbsolutePath(), e);
+        }
+    }
+
+    private static void replaceBytesInStaging(File dir, byte[] oldBytes, byte[] newBytes) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                replaceBytesInStaging(f, oldBytes, newBytes);
+            } else if (f.isFile()) {
+                replaceInFile(f, oldBytes, newBytes);
+            }
+        }
+    }
+
+    public static boolean isBootstrapInstalled() {
+        File loginBin = new File(TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH, "login");
+        File shBin = new File(TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH, "sh");
+        return loginBin.exists() && shBin.exists();
+    }
+
+    public static void setupDaemonDirectories() {
+        if (!isBootstrapInstalled()) return;
+        File runDaemons = new File(TermuxConstants.TERMUX_PREFIX_DIR_PATH, "var/run/daemons");
+        if (!runDaemons.exists()) {
+            runDaemons.mkdirs();
+        }
+        File logDaemons = new File(TermuxConstants.TERMUX_PREFIX_DIR_PATH, "var/log/daemons");
+        if (!logDaemons.exists()) {
+            logDaemons.mkdirs();
+        }
+    }
 
 }
